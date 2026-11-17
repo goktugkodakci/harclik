@@ -3,6 +3,8 @@
 Ay başı ve ay ortası gelen harçlığını bir sonrakine kadar idare etmek için basit bir bütçe uygulaması.
 iPhone'da ana ekrana eklenir, kendi simgesiyle açılır, internetsiz çalışır. Veriler sadece telefonda durur.
 
+**Uygulama:** https://goktugkodakci.github.io/harclik/ (iPhone'da Safari ile aç → Paylaş → Ana Ekrana Ekle)
+
 ## Ne yapar
 
 - **Bugün harcayabileceğin**: kalan parayı bir sonraki harçlığa kadarki günlere böler. Gün içinde
