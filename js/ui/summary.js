@@ -1,19 +1,21 @@
-import { todayStatus } from '../core/budget.js';
-import { addDays, diffDays, formatDayMonth } from '../core/dates.js';
+import { nextPayday, periodBudget, planFor } from '../core/budget.js';
+import { KEYIF } from '../core/categories.js';
+import { calendarParts, diffDays, formatDayMonth, formatRange } from '../core/dates.js';
 import { formatAmount, formatMoney } from '../core/money.js';
-import { emptyCard, entryRow, linkButton, moneyEl, sectionHead } from './components.js';
+import { bubble, emptyCard, entryRow, linkButton, moneyEl, ring, sectionHead } from './components.js';
 import { h, icon } from './dom.js';
 
 const RECENT_COUNT = 5;
-// Above this many characters the hero number steps down a size so it never wraps.
-const LONG_AMOUNT_CHARS = 7;
-const PACE_TEXT = { ok: 'Tempon iyi', fast: 'Biraz hızlı gidiyorsun', over: 'Bütçeyi aştın' };
+// Above this many characters the number inside the hero ring steps down a size.
+const LONG_AMOUNT_CHARS = 6;
+const HERO_RING = { size: 196, stroke: 14 };
+const TILE_RING = { size: 46, stroke: 5 };
 
 function percent(share) {
-  return `%${Math.round(share * 100)}`;
+  return Math.round(Math.max(0, Math.min(1, share)) * 100);
 }
 
-function heroContent(period, status, settings, onAddAllowance) {
+function heroContent(period, budget, settings, onAddAllowance) {
   if (!period.hasAllowance) {
     return {
       tone: 'neutral',
@@ -28,78 +30,197 @@ function heroContent(period, status, settings, onAddAllowance) {
       tone: 'over',
       label: 'Bu dönem eksidesin',
       amount: period.balance,
+      caption: 'eksi',
       sub: settings.carryOver
         ? 'Devir açık olduğu için bu eksi bir sonraki harçlıktan düşülecek.'
         : 'Sonraki harçlığa kadar harcamaya ara vermeye çalış.'
     };
   }
-  if (status.leftToday < 0) {
+  if (budget.keyifBudget < 0) {
     return {
       tone: 'warn',
-      label: 'Bugünkü limiti aştın',
-      amount: status.leftToday,
-      sub: `Yarından itibaren günde ${formatMoney(status.tomorrowLimit)} harcayabilirsin.`
+      label: 'Gerekli harcamalar parayı aşıyor',
+      amount: budget.keyifLeft,
+      caption: 'keyif yok',
+      sub: `Eldeki para ${formatMoney(budget.available)}, gerekli toplam ${formatMoney(budget.plannedTotal)}. Planı küçültmeyi düşün.`
     };
   }
-  let sub = `Sonraki harçlığa kadar günde ${formatMoney(status.dailyLimit)}`;
-  if (status.daysLeft === 1) {
-    sub = 'Dönemin son günü; kalan paranın hepsi bugünün.';
-  } else if (status.spentToday > 0) {
-    sub = `Günlük limitin ${formatMoney(status.dailyLimit)} · bugün ${formatMoney(status.spentToday)} harcadın`;
+  if (budget.keyifLeft < 0) {
+    return {
+      tone: 'warn',
+      label: 'Keyif bütçesini aştın',
+      amount: budget.keyifLeft,
+      caption: 'aşıldı',
+      sub: `Gerekli harcamalara ayırdığın paradan ${formatMoney(-budget.keyifLeft)} kullandın.`
+    };
   }
-  return { tone: 'ok', label: 'Bugün harcayabileceğin', amount: status.leftToday, sub };
+  let sub = `${formatMoney(budget.keyifBudget)} keyif bütçenden ${formatMoney(budget.keyifSpent + budget.overrun)} kullandın`;
+  if (budget.plannedTotal === 0) {
+    sub = 'Henüz gerekli harcama ayırmadın; paranın hepsi keyif sayılıyor.';
+  }
+  const share = budget.keyifBudget > 0 ? budget.keyifLeft / budget.keyifBudget : 0;
+  return {
+    tone: 'ok',
+    label: 'Keyif için kalan',
+    amount: budget.keyifLeft,
+    share,
+    caption: `kalan %${percent(share)}`,
+    sub,
+    note: budget.overrun > 0 ? `Gerekli bölümlerde planı ${formatMoney(budget.overrun)} aştın; fark keyiften düştü.` : null
+  };
 }
 
-function hero({ tone, label, amount, sub, action = null }) {
-  const isLong = amount !== null && formatAmount(amount).length > LONG_AMOUNT_CHARS;
+// How this period's money is split: every planned section, then keyif.
+function splitBar(budget) {
+  const keyif = Math.max(0, budget.keyifBudget);
+  const total = budget.plannedTotal + keyif;
+  if (total <= 0 || budget.sections.length === 0) {
+    return null;
+  }
+  const parts = [
+    ...budget.sections.filter((section) => section.planned > 0).map((section) => ({ name: section.name, amount: section.planned, color: section.color })),
+    ...(keyif > 0 ? [{ name: KEYIF.label, amount: keyif, color: 'var(--split-keyif)' }] : [])
+  ];
+  const description = parts.map((part) => `${part.name} ${formatMoney(part.amount)}`).join(', ');
+  return h(
+    'div',
+    { class: 'split' },
+    h('div', { class: 'split-bar', role: 'img', 'aria-label': `Paranın bölünüşü: ${description}` }, parts.map((part) => h('span', {
+      style: { '--w': `${(part.amount / total) * 100}%`, '--c': part.color }
+    }))),
+    h(
+      'div',
+      { class: 'split-legend' },
+      h('span', {}, 'Gerekli ', moneyEl(budget.plannedTotal)),
+      h('span', {}, 'Keyif ', moneyEl(keyif))
+    )
+  );
+}
+
+function hero(content, budget) {
+  const { tone, label, amount, sub, note = null, action = null, caption = null, share = 0 } = content;
+  const amountText = amount === null ? '' : formatAmount(amount);
   return h(
     'section',
     { class: 'hero', 'data-tone': tone, 'aria-label': label },
     h('p', { class: 'hero-label' }, label),
-    amount === null ? null : h('p', { class: isLong ? 'hero-amount is-long' : 'hero-amount' }, moneyEl(amount)),
+    amount === null
+      ? null
+      : ring({
+        ...HERO_RING,
+        value: share,
+        className: 'hero-ring',
+        label: `${label}: ${formatMoney(amount)}`,
+        content: [
+          h('span', { class: amountText.length > LONG_AMOUNT_CHARS ? 'hero-amount is-long' : 'hero-amount' }, moneyEl(amount)),
+          caption ? h('span', { class: 'hero-caption' }, caption) : null
+        ]
+      }),
     h('p', { class: 'hero-sub' }, sub),
+    note ? h('p', { class: 'hero-note' }, note) : null,
+    tone === 'neutral' ? null : splitBar(budget),
     action ? h('button', { type: 'button', class: 'btn btn-on-hero', onClick: action.run }, action.label) : null
   );
 }
 
-function periodCard(period, status) {
-  const fill = Math.min(1, Math.max(0, status.spentShare));
-  const details = [`Gelen ${formatMoney(period.income)}`, `Harcanan ${formatMoney(period.spent)}`];
-  if (period.carryIn !== 0) {
-    details.push(`Devreden ${formatMoney(period.carryIn, { sign: 'always' })}`);
+function paydayCard(next, period, today) {
+  if (!next) {
+    return null;
   }
+  const parts = calendarParts(next.date);
+  const daysLeft = diffDays(next.date, today);
+  const totalDays = diffDays(period.end, period.start) + 1;
+  const dayOfPeriod = Math.min(totalDays, Math.max(1, diffDays(today, period.start) + 1));
   return h(
     'section',
-    { class: 'card period-card', 'aria-label': 'Dönem durumu' },
-    h('div', { class: 'stat-row' }, h('span', { class: 'stat-label' }, 'Dönemde kalan'), moneyEl(period.balance, { className: 'stat-value' })),
+    { class: 'card payday-card', 'aria-label': 'Sonraki harçlık' },
+    h('div', { class: 'calendar', 'aria-hidden': 'true' }, h('span', { class: 'calendar-month' }, parts.monthShort), h('span', { class: 'calendar-day' }, parts.day)),
     h(
       'div',
-      {
-        class: 'meter',
-        'data-pace': status.pace,
-        role: 'img',
-        'aria-label': `Geçen süre ${percent(status.timeShare)}, harcanan ${percent(status.spentShare)}`,
-        style: { '--fill': `${fill * 100}%`, '--mark': `${status.timeShare * 100}%` }
-      },
-      h('span', { class: 'meter-fill' }),
-      h('span', { class: 'meter-mark' })
-    ),
-    h(
-      'div',
-      { class: 'meter-caption' },
-      h('span', {}, `Gün ${status.elapsedDays}/${status.totalDays}`),
-      h('span', {}, `${percent(status.spentShare)} harcandı`)
-    ),
-    h('p', { class: 'pill', 'data-tone': status.pace }, PACE_TEXT[status.pace]),
-    h('p', { class: 'period-detail' }, details.join(' · '))
+      { class: 'payday-info' },
+      h('p', { class: 'payday-kicker' }, 'Sonraki harçlık'),
+      h('p', { class: 'payday-when' }, daysLeft === 1 ? 'Yarın' : `${daysLeft} gün sonra`),
+      h('p', { class: 'payday-detail' }, moneyEl(next.amount), ` · ${formatDayMonth(next.date)} ${parts.weekday}`),
+      h(
+        'div',
+        { class: 'period-progress' },
+        h('span', { class: 'period-track', 'aria-hidden': 'true' }, h('span', { style: { '--fill': `${(dayOfPeriod / totalDays) * 100}%` } })),
+        h('span', { class: 'period-label' }, `Dönemin ${dayOfPeriod}. günü / ${totalDays}`)
+      )
+    )
   );
 }
 
-export function renderSummary({ periods, today, settings, onOpenEntry, onAddAllowance, onShowHistory, onOpenSettings }) {
+function sectionTile(section, onAddTo) {
+  const over = section.spent > section.planned;
+  let share = 0;
+  if (section.planned > 0) {
+    share = section.spent / section.planned;
+  } else if (section.spent > 0) {
+    share = 1;
+  }
+  return h(
+    'button',
+    {
+      type: 'button',
+      class: over ? 'tile is-over' : 'tile',
+      style: { '--c': section.color },
+      'aria-label': `${section.name}: ${formatMoney(section.planned)} ayrıldı, ${formatMoney(section.spent)} harcandı. Harcama ekle`,
+      onClick: () => onAddTo(section.id)
+    },
+    h(
+      'span',
+      { class: 'tile-top' },
+      bubble(section.info),
+      ring({ ...TILE_RING, value: share, className: 'tile-ring', content: h('span', { class: 'tile-pct' }, `${percent(share)}`) })
+    ),
+    h('span', { class: 'tile-name' }, section.name),
+    over
+      ? h('span', { class: 'tile-left' }, moneyEl(section.spent - section.planned), h('small', {}, ' aştı'))
+      : h('span', { class: 'tile-left' }, moneyEl(section.planned - section.spent), h('small', {}, ' kaldı')),
+    h('span', { class: 'tile-sub' }, moneyEl(section.spent), ' / ', moneyEl(section.planned))
+  );
+}
+
+function needsSection(budget, { onAddTo, onEditPlan }) {
+  if (budget.sections.length === 0) {
+    return [
+      sectionHead('Gerekli'),
+      emptyCard(
+        'Gerekli harcamalarını yaz',
+        'Yemek, ulaşım, telefon... Her harçlıktan bunlara ne kadar ayırdığını yaz; kalanı keyif paran olarak görürsün.',
+        h('button', { type: 'button', class: 'btn btn-primary empty-action', onClick: onEditPlan }, 'Gerekli harcamaları yaz')
+      )
+    ];
+  }
+  return [
+    sectionHead('Gerekli', linkButton('Düzenle', onEditPlan)),
+    h(
+      'div',
+      { class: 'tiles' },
+      budget.sections.map((section) => sectionTile(section, onAddTo)),
+      h('button', { type: 'button', class: 'tile tile-add', onClick: onEditPlan }, icon('plus'), h('span', {}, 'Bölüm ekle'))
+    )
+  ];
+}
+
+export function renderSummary({
+  periods,
+  today,
+  settings,
+  sections,
+  plans,
+  describe,
+  onOpenEntry,
+  onAddAllowance,
+  onAddTo,
+  onEditPlan,
+  onShowHistory,
+  onOpenSettings
+}) {
   const period = periods[periods.length - 1];
-  const status = todayStatus(period, today);
-  const nextPayday = addDays(period.end, 1);
-  const daysToNext = diffDays(nextPayday, today);
+  const raw = periodBudget(period, planFor(plans, period), sections);
+  const budget = { ...raw, sections: raw.sections.map((section) => ({ ...section, info: describe(section.id) })) };
   const recent = period.entries.slice(0, RECENT_COUNT);
 
   return h(
@@ -108,15 +229,15 @@ export function renderSummary({ periods, today, settings, onOpenEntry, onAddAllo
     h(
       'header',
       { class: 'topbar' },
-      h('h1', { class: 'title' }, 'Harçlık'),
+      h('div', {}, h('h1', { class: 'title' }, 'Harçlık'), h('p', { class: 'subtitle' }, `${formatRange(period.start, period.end, today)} dönemi`)),
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Ayarlar', onClick: onOpenSettings }, icon('settings'))
     ),
-    h('p', { class: 'subtitle' }, `Sonraki harçlık ${formatDayMonth(nextPayday)} · ${daysToNext === 1 ? 'yarın' : `${daysToNext} gün sonra`}`),
-    hero(heroContent(period, status, settings, onAddAllowance)),
-    period.hasAllowance ? periodCard(period, status) : null,
+    hero(heroContent(period, budget, settings, onAddAllowance), budget),
+    paydayCard(nextPayday(settings.paydays, today), period, today),
+    needsSection(budget, { onAddTo, onEditPlan }),
     sectionHead('Bu dönem', period.entries.length > 0 ? linkButton('Tümü', onShowHistory) : null),
     recent.length > 0
-      ? h('ul', { class: 'list' }, recent.map((entry) => entryRow(entry, { today, showDate: true, onOpen: onOpenEntry })))
+      ? h('ul', { class: 'list' }, recent.map((entry) => entryRow(entry, { today, sections, showDate: true, onOpen: onOpenEntry })))
       : emptyCard('Bu dönemde henüz kayıt yok', 'Bir şey harcadığında ortadaki + düğmesiyle ekle.')
   );
 }

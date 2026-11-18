@@ -7,11 +7,16 @@ iPhone'da ana ekrana eklenir, kendi simgesiyle açılır, internetsiz çalışı
 
 ## Ne yapar
 
-- **Bugün harcayabileceğin**: kalan parayı bir sonraki harçlığa kadarki günlere böler. Gün içinde
-  harcadıkça "bugün kalan" düşer ama günün limiti sabit kalır.
-- **Hızlı giriş**: + → tutar → kategori → Kaydet. Son kullandığın kategori hazır seçili gelir.
+- **Keyif için kalan**: gerekli harcamalarını (yemek, ulaşım, telefon...) bölüm bölüm kendin yazarsın;
+  uygulama bunları harçlıktan ayırır, kalanı keyif paran olarak gösterir.
+- **Bölümler**: her harçlık dönemi için bölüm ekle, sil, tutarını değiştir. Plan bir sonraki döneme
+  kendiliğinden geçer. Bir bölüm planını aşarsa fark keyiften düşer.
+- **Hızlı giriş**: + → tutar → Keyif ya da bir bölüm → Kaydet. Ana ekranda bir bölüme dokunmak da o
+  bölüme harcama ekler.
+- **Harçlık günleri**: ayda 1 ile 4 arası harçlık günü, her biri kendi tutarıyla (Ayarlar'dan eklenir/silinir).
 - **Harçlık kendiliğinden eklenir**: harçlık günü gelince uygulama tutarı kendisi yazar. Geç ya da farklı
-  geldiyse Geçmiş'ten kaydı açıp tarihini/tutarını düzeltebilirsin.
+  geldiyse Geçmiş'ten kaydı açıp tarihini/tutarını düzeltebilirsin. Bir harçlığın tarihini öne alırsan
+  o dönem, o tarihten önce kaydedilmiş gerekli harcama planını kullanır.
 - **Devir**: artan (ya da eksi) para sonraki döneme geçer. Ayarlar'dan kapatılabilir.
 - **Geçmiş**: dönem dönem gezinme, kategorilere göre dağılım, günlük liste.
 - **Yedek**: Ayarlar → Yedek al ile tüm veriyi bir dosyaya kaydedip başka telefona taşıyabilirsin.

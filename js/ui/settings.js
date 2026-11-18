@@ -1,7 +1,7 @@
 import { importControl, paydayEditor } from './components.js';
 import { h, icon } from './dom.js';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 
 function isStandalone() {
   return window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
@@ -44,7 +44,7 @@ export function renderSettings({ settings, onBack, onSavePlan, onCarryOver, onEx
         }
       },
       editor.element,
-      h('p', { class: 'hint' }, 'Değişiklik bir sonraki harçlıktan itibaren geçerli olur. Gelmiş bir harçlığın tutarını ya da gününü Geçmiş\'ten düzeltebilirsin.'),
+      h('p', { class: 'hint' }, 'Ayda 1 ile 4 arası harçlık günü ekleyebilirsin. Değişiklik bir sonraki harçlıktan itibaren geçerli olur; gelmiş bir harçlığın tutarını ya da gününü Geçmiş\'ten düzeltebilirsin.'),
       error,
       h('button', { type: 'submit', class: 'btn btn-primary' }, 'Planı kaydet')
     ),

@@ -1,19 +1,23 @@
 import {
+  applyPlan,
   buildPeriods,
   catchUpAllowances,
   createEntry,
   lastExpenseCategory,
   normalizeNote,
+  periodBudget,
+  planFor,
   setupState,
-  updatePlan
+  updatePaydays
 } from './core/budget.js';
-import { ALLOWANCE_CATEGORY } from './core/categories.js';
+import { ALLOWANCE_CATEGORY, INCOME_CATEGORIES, KEYIF_CATEGORY, describeCategory } from './core/categories.js';
 import { toISODate } from './core/dates.js';
 import { formatMoney } from './core/money.js';
 import { discardSetAside, emptyState, exportBackup, importBackup, loadState, saveState } from './core/store.js';
 import { h } from './ui/dom.js';
 import { openEntrySheet } from './ui/entry-sheet.js';
 import { renderHistory } from './ui/history.js';
+import { openPlanSheet } from './ui/plan-sheet.js';
 import { renderSettings } from './ui/settings.js';
 import { renderSetup } from './ui/setup.js';
 import { renderSummary } from './ui/summary.js';
@@ -85,17 +89,41 @@ function go(view) {
   window.scrollTo(0, 0);
 }
 
+function describe(id) {
+  return describeCategory('expense', id, state.sections);
+}
+
+function currentPeriod() {
+  const periods = buildPeriods(state, today);
+  return periods[periods.length - 1];
+}
+
+// Expense choices: Keyif first, then this period's sections in plan order. An entry being
+// edited keeps its own section on the list even if it is no longer planned.
+function expenseOptions(keepId = null) {
+  const ids = [KEYIF_CATEGORY, ...Object.keys(planFor(state.plans, currentPeriod()))];
+  if (keepId && !ids.includes(keepId)) {
+    ids.push(keepId);
+  }
+  return ids.map(describe).filter((option, index, list) => list.findIndex((other) => other.id === option.id) === index);
+}
+
+function incomeOptions() {
+  return INCOME_CATEGORIES.map((category) => describeCategory('income', category.id, state.sections));
+}
+
 function addEntry({ type = 'expense', category = null } = {}) {
   openEntrySheet({
     type,
     category,
     today,
+    expenseOptions: expenseOptions(),
+    incomeOptions: incomeOptions(),
     defaultExpenseCategory: lastExpenseCategory(state.entries),
     onSave: (values) => {
       commit({ ...state, entries: [...state.entries, createEntry(values)] });
-      showToast(values.type === 'expense'
-        ? `${formatMoney(values.amount)} harcama eklendi`
-        : `${formatMoney(values.amount)} gelir eklendi`);
+      const where = values.type === 'expense' ? describe(values.category).label : 'gelir';
+      showToast(`${formatMoney(values.amount)} eklendi · ${where}`);
     }
   });
 }
@@ -104,6 +132,8 @@ function editEntry(entry) {
   openEntrySheet({
     entry,
     today,
+    expenseOptions: expenseOptions(entry.type === 'expense' ? entry.category : null),
+    incomeOptions: incomeOptions(),
     defaultExpenseCategory: lastExpenseCategory(state.entries),
     onSave: (values) => {
       commit({ ...state, entries: state.entries.map((item) => (item.id === entry.id ? { ...item, ...values, note: normalizeNote(values.note) } : item)) });
@@ -126,15 +156,44 @@ function deleteEntry(entry) {
   });
 }
 
-function completeSetup({ paydays, balance }) {
-  commit(setupState({ paydays, balance, today }));
+function editPlan() {
+  const period = currentPeriod();
+  const budget = periodBudget(period, planFor(state.plans, period), state.sections);
+  openPlanSheet({
+    period,
+    today,
+    sections: state.sections,
+    available: budget.available,
+    rows: budget.sections.map((section) => ({ id: section.id, name: section.name, amount: section.planned })),
+    onSave: (rows) => {
+      const next = applyPlan(state, period.start, rows);
+      const kept = new Set(Object.keys(next.plans[period.start]));
+      const dropped = budget.sections.filter((section) => !kept.has(section.id) && section.spent > 0);
+      if (dropped.length > 0) {
+        const names = dropped.map((section) => section.name).join(', ');
+        const spent = dropped.reduce((total, section) => total + section.spent, 0);
+        // Native confirm is the most reliable modal inside an iOS home screen web app.
+        if (!window.confirm(`${names} için bu dönem ${formatMoney(spent)} harcama var. Plandan çıkarırsan bu harcamalar keyiften sayılır. Devam edilsin mi?`)) {
+          return false;
+        }
+      }
+      commit(next);
+      const keyifBudget = periodBudget(period, next.plans[period.start], next.sections).keyifBudget;
+      showToast(`Plan kaydedildi · keyif bütçen ${formatMoney(keyifBudget)}`);
+      return true;
+    }
+  });
+}
+
+function completeSetup({ paydays, balance, planRows }) {
+  commit(setupState({ paydays, balance, planRows, today }));
   ui.view = 'summary';
   showToast('Hazırsın. Harcadıkça + ile ekle.');
 }
 
-function savePlan(paydays) {
-  commit(updatePlan(state, paydays, today));
-  showToast('Plan kaydedildi');
+function savePaydays(paydays) {
+  commit(updatePaydays(state, paydays, today));
+  showToast('Harçlık planı kaydedildi');
 }
 
 function setCarryOver(carryOver) {
@@ -218,6 +277,9 @@ function render() {
         periods,
         start: ui.historyStart,
         today,
+        sections: state.sections,
+        plans: state.plans,
+        describe,
         onSelect: (start) => {
           ui.historyStart = start;
           render();
@@ -228,7 +290,7 @@ function render() {
       view = renderSettings({
         settings: state.settings,
         onBack: () => go('summary'),
-        onSavePlan: savePlan,
+        onSavePlan: savePaydays,
         onCarryOver: setCarryOver,
         onExport: exportData,
         onImport: importFile,
@@ -239,8 +301,13 @@ function render() {
         periods,
         today,
         settings: state.settings,
+        sections: state.sections,
+        plans: state.plans,
+        describe,
         onOpenEntry: editEntry,
         onAddAllowance: () => addEntry({ type: 'income', category: ALLOWANCE_CATEGORY }),
+        onAddTo: (sectionId) => addEntry({ category: sectionId }),
+        onEditPlan: editPlan,
         onShowHistory: () => go('history'),
         onOpenSettings: () => go('settings')
       });
@@ -276,8 +343,9 @@ function requestPersistentStorage() {
 function boot() {
   const loaded = loadState(storage);
   state = loaded.state;
-  if (loaded.status === 'repaired') {
-    // Save the cleaned copy now so the warning does not repeat on every launch.
+  // An older or repaired save is rewritten in the current shape right away so the migration
+  // and the warning do not repeat on every launch.
+  if (loaded.needsSave) {
     persist();
   }
   catchUp();

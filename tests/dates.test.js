@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   addDays,
+  calendarParts,
   dayWithSuffix,
   daysInMonth,
   diffDays,
@@ -25,6 +26,11 @@ test('formatDayMonth ve formatRange kısa ay adlarını kullanır', () => {
   assert.equal(formatDayMonth('2026-12-01'), '1 Aralık');
   assert.equal(formatRange('2026-11-15', '2026-11-30', '2026-11-17'), '15 Kas – 30 Kas');
   assert.equal(formatRange('2026-12-15', '2026-12-31', '2027-01-03'), '15 Ara 2026 – 31 Ara 2026');
+});
+
+test('calendarParts takvim yaprağı için gün, kısa ay ve hafta gününü verir', () => {
+  assert.deepEqual(calendarParts('2026-12-01'), { day: 1, monthShort: 'ARA', weekday: 'Salı' });
+  assert.deepEqual(calendarParts('2026-08-15'), { day: 15, monthShort: 'AĞU', weekday: 'Cumartesi' });
 });
 
 test('dayWithSuffix Türkçe eki sayının okunuşuna göre seçer', () => {

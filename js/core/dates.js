@@ -88,6 +88,11 @@ export function formatRange(start, end, today) {
   return `${formatDayMonth(start, { short: true, withYear })} – ${formatDayMonth(end, { short: true, withYear })}`;
 }
 
+export function calendarParts(iso) {
+  const { month, day } = parseISODate(iso);
+  return { day, monthShort: MONTHS_SHORT[month - 1].toLocaleUpperCase('tr'), weekday: weekdayName(iso) };
+}
+
 export function dayWithSuffix(day) {
   const suffix = day % 10 === 0 ? TENS_SUFFIX[day] : DIGIT_SUFFIX[day % 10];
   return `${day}'${suffix}`;

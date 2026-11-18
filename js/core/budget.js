@@ -1,16 +1,18 @@
-import { ALLOWANCE_CATEGORY, DEFAULT_EXPENSE_CATEGORY, EXTRA_INCOME_CATEGORY, FALLBACK_EXPENSE_CATEGORY } from './categories.js';
-import { addDays, daysInMonth, diffDays, makeISODate, parseISODate } from './dates.js';
-import { KURUS_PER_LIRA, MAX_AMOUNT } from './money.js';
+import { ALLOWANCE_CATEGORY, EXTRA_INCOME_CATEGORY, KEYIF_CATEGORY, SECTION_COLORS, isReservedName } from './categories.js';
+import { addDays, daysInMonth, makeISODate, parseISODate } from './dates.js';
+import { MAX_AMOUNT } from './money.js';
 
-export const STATE_VERSION = 1;
+export const STATE_VERSION = 2;
 export const NOTE_MAX_LENGTH = 60;
+export const SECTION_NAME_MAX_LENGTH = 24;
+const MAX_SECTIONS = 12;
 export const SETUP_SPENT_NOTE = 'Önceki harcamalar';
 export const SETUP_LEFTOVER_NOTE = 'Önceki dönemden kalan';
 
-const PAYDAY_COUNT = 2;
-// The keypad stops at MAX_AMOUNT; only the setup adjustment can exceed it, when two paydays
-// fall on the same clamped day (30th and 31st in February).
-export const MAX_ENTRY_AMOUNT = MAX_AMOUNT * PAYDAY_COUNT;
+export const MAX_PAYDAYS = 4;
+// The keypad stops at MAX_AMOUNT; only the setup adjustment can exceed it, when several paydays
+// fall on the same clamped day (29th, 30th and 31st in February).
+export const MAX_ENTRY_AMOUNT = MAX_AMOUNT * MAX_PAYDAYS;
 // A phone left in a drawer for years (or a clock that jumped) must not flood the list.
 const MAX_CATCH_UP_MONTHS = 36;
 // Enough months to always reach a payday, even for day 31 in a short month.
@@ -25,10 +27,6 @@ function compareDates(a, b) {
 
 function sumAmounts(entries) {
   return entries.reduce((total, entry) => total + entry.amount, 0);
-}
-
-function floorToLira(kurus) {
-  return Math.floor(kurus / KURUS_PER_LIRA) * KURUS_PER_LIRA;
 }
 
 function shiftMonth(year, month, delta) {
@@ -118,9 +116,21 @@ export function lastPaydayOnOrBefore(paydays, date) {
   return null;
 }
 
+export function nextPayday(paydays, today) {
+  const date = nextPaydayAfter(paydays, today);
+  if (!date) {
+    return null;
+  }
+  const amount = paydaysBetween(paydays, addDays(date, -1), date).reduce((total, payday) => total + payday.amount, 0);
+  return { date, amount };
+}
+
 export function validatePaydays(paydays) {
-  if (!Array.isArray(paydays) || paydays.length !== PAYDAY_COUNT) {
-    return 'İki harçlık günü gerekli.';
+  if (!Array.isArray(paydays) || paydays.length === 0) {
+    return 'En az bir harçlık günü gerekli.';
+  }
+  if (paydays.length > MAX_PAYDAYS) {
+    return `En fazla ${MAX_PAYDAYS} harçlık günü ekleyebilirsin.`;
   }
   for (const payday of paydays) {
     if (!Number.isInteger(payday?.day) || payday.day < 1 || payday.day > 31) {
@@ -133,19 +143,118 @@ export function validatePaydays(paydays) {
       return 'Tutar çok büyük.';
     }
   }
-  if (paydays[0].day === paydays[1].day) {
-    return 'İki harçlık günü farklı olmalı.';
+  if (new Set(paydays.map((payday) => payday.day)).size !== paydays.length) {
+    return 'Harçlık günleri birbirinden farklı olmalı.';
   }
   return null;
 }
 
 function copyPaydays(paydays) {
-  return paydays.map(({ day, amount }) => ({ day, amount }));
+  return paydays.map(({ day, amount }) => ({ day, amount })).sort((a, b) => a.day - b.day);
+}
+
+export function normalizeSectionName(name) {
+  return String(name ?? '').trim().replace(/\s+/g, ' ');
+}
+
+function nameKey(name) {
+  return normalizeSectionName(name).toLocaleLowerCase('tr');
+}
+
+// `sections` is the catalog. Renaming a section to the name of an old section that is not in
+// this plan would leave two sections with one name, and the old one's history could never be
+// reattached by name again, so that is refused.
+export function validatePlanRows(rows, sections = []) {
+  if (rows.length > MAX_SECTIONS) {
+    return `En fazla ${MAX_SECTIONS} bölüm ekleyebilirsin.`;
+  }
+  const idsInRows = new Set(rows.map((row) => row.id).filter(Boolean));
+  const seen = new Set();
+  for (const row of rows) {
+    const name = normalizeSectionName(row.name);
+    if (name === '') {
+      return 'Her bölüme bir ad yaz.';
+    }
+    if (name.length > SECTION_NAME_MAX_LENGTH) {
+      return `“${name}” çok uzun; en fazla ${SECTION_NAME_MAX_LENGTH} karakter olabilir.`;
+    }
+    if (isReservedName(name)) {
+      return `“${name}” adı ayrılmış, başka bir ad seç.`;
+    }
+    if (!Number.isSafeInteger(row.amount) || row.amount < 0 || row.amount > MAX_AMOUNT) {
+      return `${name} için geçerli bir tutar yaz (0 da olabilir).`;
+    }
+    const key = nameKey(name);
+    if (seen.has(key)) {
+      return `“${name}” iki kez yazılmış.`;
+    }
+    seen.add(key);
+    const clash = row.id && sections.some((section) => section.id !== row.id && !idsInRows.has(section.id) && nameKey(section.name) === key);
+    if (clash) {
+      return `“${name}” adı eski bir bölümde kullanılmış; başka bir ad seç.`;
+    }
+  }
+  return null;
+}
+
+// Saves the "gerekli" plan of the period starting at periodStart. Sections live in a catalog
+// that is never pruned: renaming shows up in history too, and a section added again under the
+// same name gets its old id back, so its earlier expenses count toward it again.
+export function applyPlan(state, periodStart, rows) {
+  const sections = [...state.sections];
+  const claimed = new Map();
+  const used = new Set();
+  // Rows that came from an existing section keep it, whatever their position; only then are
+  // new rows matched by name, so a new row can never steal a section another row is renaming.
+  rows.forEach((row, index) => {
+    const found = row.id ? sections.findIndex((section) => section.id === row.id) : -1;
+    if (found >= 0 && !used.has(sections[found].id)) {
+      claimed.set(index, found);
+      used.add(sections[found].id);
+    }
+  });
+  rows.forEach((row, index) => {
+    if (claimed.has(index)) {
+      return;
+    }
+    let found = sections.findIndex((section) => !used.has(section.id) && nameKey(section.name) === nameKey(row.name));
+    if (found < 0) {
+      sections.push({ id: `s-${newId()}`, name: normalizeSectionName(row.name), color: SECTION_COLORS[sections.length % SECTION_COLORS.length] });
+      found = sections.length - 1;
+    }
+    claimed.set(index, found);
+    used.add(sections[found].id);
+  });
+
+  const plan = {};
+  rows.forEach((row, index) => {
+    const position = claimed.get(index);
+    const name = normalizeSectionName(row.name);
+    if (sections[position].name !== name) {
+      sections[position] = { ...sections[position], name };
+    }
+    plan[sections[position].id] = row.amount;
+  });
+  return { ...state, sections, plans: { ...state.plans, [periodStart]: plan } };
+}
+
+// A period uses the latest plan saved on or before its start, so a plan carries forward on its
+// own and editing today's plan never rewrites earlier periods. A period older than every plan
+// has none, except the one the first plan was saved in (its start can be pulled earlier by an
+// entry dated before setup).
+export function planFor(plans, period) {
+  const keys = Object.keys(plans).sort(compareDates);
+  const inherited = keys.filter((key) => key <= period.start).pop();
+  if (inherited) {
+    return plans[inherited];
+  }
+  const first = keys[0];
+  return first && first <= period.end ? plans[first] : {};
 }
 
 // First launch: the user is usually mid-period, so we ask how much is left instead of
 // making them reconstruct every past expense. The difference becomes one adjustable entry.
-export function setupState({ paydays, carryOver = true, balance = null, today, now = Date.now() }) {
+export function setupState({ paydays, carryOver = true, balance = null, planRows = [], today, now = Date.now() }) {
   const start = lastPaydayOnOrBefore(paydays, today);
   const due = paydaysBetween(paydays, addDays(start, -1), start);
   const entries = due.map(({ date, amount }) => createEntry({ type: 'income', amount, category: ALLOWANCE_CATEGORY, date }, now));
@@ -155,18 +264,21 @@ export function setupState({ paydays, carryOver = true, balance = null, today, n
     const difference = balance - received;
     entries.push(createEntry(
       difference < 0
-        ? { type: 'expense', amount: -difference, category: FALLBACK_EXPENSE_CATEGORY, note: SETUP_SPENT_NOTE, date: start }
+        ? { type: 'expense', amount: -difference, category: KEYIF_CATEGORY, note: SETUP_SPENT_NOTE, date: start }
         : { type: 'income', amount: difference, category: EXTRA_INCOME_CATEGORY, note: SETUP_LEFTOVER_NOTE, date: start },
       now + 1
     ));
   }
 
-  return {
+  const state = {
     version: STATE_VERSION,
     settings: { setupDone: true, paydays: copyPaydays(paydays), carryOver },
     generatedThrough: today,
+    sections: [],
+    plans: {},
     entries
   };
+  return planRows.length > 0 ? applyPlan(state, start, planRows) : state;
 }
 
 // Adds the allowance for every payday since the last visit. generatedThrough only moves
@@ -191,7 +303,7 @@ export function catchUpAllowances(state, today, now = Date.now()) {
   };
 }
 
-export function updatePlan(state, paydays, today) {
+export function updatePaydays(state, paydays, today) {
   const { state: current } = catchUpAllowances(state, today);
   return { ...current, settings: { ...current.settings, paydays: copyPaydays(paydays) } };
 }
@@ -242,61 +354,42 @@ export function buildPeriods(state, today) {
   });
 }
 
-export function todayStatus(period, today) {
-  const totalDays = diffDays(period.end, period.start) + 1;
-  const daysLeft = Math.max(1, diffDays(period.end, today) + 1);
-  const elapsedDays = Math.min(totalDays, Math.max(1, diffDays(today, period.start) + 1));
-  const spentToday = sumAmounts(period.entries.filter((entry) => entry.type === 'expense' && entry.date === today));
-
-  // Today's limit is fixed at the start of the day: spending today lowers what is left
-  // today, not the limit itself. Otherwise every purchase would quietly move the goalpost.
-  const startOfToday = period.balance + spentToday;
-  const dailyLimit = daysLeft === 1
-    ? Math.max(0, startOfToday)
-    : Math.max(0, floorToLira(startOfToday / daysLeft));
-  const tomorrowLimit = daysLeft > 1 ? Math.max(0, floorToLira(period.balance / (daysLeft - 1))) : null;
-
-  const budget = period.carryIn + period.income;
-  let spentShare = 0;
-  if (budget > 0) {
-    spentShare = period.spent / budget;
-  } else if (period.spent > 0) {
-    spentShare = 1;
-  }
-  const timeShare = elapsedDays / totalDays;
-  let pace = 'ok';
-  if (period.balance < 0) {
-    pace = 'over';
-  } else if (spentShare > timeShare) {
-    pace = 'fast';
-  }
-
-  return {
-    totalDays,
-    daysLeft,
-    elapsedDays,
-    spentToday,
-    dailyLimit,
-    leftToday: dailyLimit - spentToday,
-    tomorrowLimit,
-    budget,
-    spentShare,
-    timeShare,
-    pace
-  };
-}
-
-export function categoryBreakdown(entries) {
-  const totals = new Map();
-  for (const entry of entries) {
+// "Keyif" is whatever is left once every planned section has its money set aside. A section
+// that runs over its plan eats into keyif; spending on a section that is not in this period's
+// plan counts as keyif spending.
+export function periodBudget(period, plan, sections) {
+  const byId = new Map(sections.map((section) => [section.id, section]));
+  const spentBy = new Map();
+  for (const entry of period.entries) {
     if (entry.type === 'expense') {
-      totals.set(entry.category, (totals.get(entry.category) ?? 0) + entry.amount);
+      spentBy.set(entry.category, (spentBy.get(entry.category) ?? 0) + entry.amount);
     }
   }
-  const total = [...totals.values()].reduce((sum, amount) => sum + amount, 0);
-  return [...totals]
-    .map(([category, amount]) => ({ category, amount, share: amount / total }))
-    .sort((a, b) => b.amount - a.amount);
+  const planned = Object.entries(plan)
+    .filter(([id]) => byId.has(id))
+    .map(([id, amount]) => ({ ...byId.get(id), planned: amount, spent: spentBy.get(id) ?? 0 }));
+  const plannedIds = new Set(planned.map((section) => section.id));
+
+  let keyifSpent = 0;
+  for (const [id, amount] of spentBy) {
+    if (!plannedIds.has(id)) {
+      keyifSpent += amount;
+    }
+  }
+  const available = period.carryIn + period.income;
+  const plannedTotal = planned.reduce((total, section) => total + section.planned, 0);
+  const stillReserved = planned.reduce((total, section) => total + Math.max(0, section.planned - section.spent), 0);
+  const overrun = planned.reduce((total, section) => total + Math.max(0, section.spent - section.planned), 0);
+
+  return {
+    sections: planned,
+    available,
+    plannedTotal,
+    keyifBudget: available - plannedTotal,
+    keyifSpent,
+    keyifLeft: period.balance - stillReserved,
+    overrun
+  };
 }
 
 export function groupByDay(entries) {
@@ -322,5 +415,5 @@ export function lastExpenseCategory(entries) {
       latest = entry;
     }
   }
-  return latest?.category ?? DEFAULT_EXPENSE_CATEGORY;
+  return latest?.category ?? KEYIF_CATEGORY;
 }

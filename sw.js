@@ -1,5 +1,5 @@
 // Bump VERSION whenever any file below changes, or phones keep serving the old copy.
-const VERSION = 'harclik-1.0.0';
+const VERSION = 'harclik-1.1.0';
 
 const ASSETS = [
   './',
@@ -16,8 +16,10 @@ const ASSETS = [
   './js/ui/dom.js',
   './js/ui/entry-sheet.js',
   './js/ui/history.js',
+  './js/ui/plan-sheet.js',
   './js/ui/settings.js',
   './js/ui/setup.js',
+  './js/ui/sheet.js',
   './js/ui/summary.js',
   './js/ui/toast.js',
   './icons/apple-touch-icon.png',

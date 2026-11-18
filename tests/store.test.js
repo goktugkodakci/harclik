@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { setupState } from '../js/core/budget.js';
 import {
   CORRUPT_KEY,
+  PRE_MIGRATION_KEY,
   STORAGE_KEY,
   exportBackup,
   importBackup,
@@ -42,6 +43,7 @@ test('kaydet ve yükle aynı durumu verir', () => {
   assert.equal(saveState(storage, state), true);
   const loaded = loadState(storage);
   assert.equal(loaded.status, 'ok');
+  assert.equal(loaded.needsSave, false);
   assert.deepEqual(loaded.state, state);
 });
 
@@ -93,9 +95,75 @@ test('bozuk kayıtlar atılır, eksik alanlar onarılır', () => {
   assert.equal(loaded.entries.length, state.entries.length + 1);
   const repaired = loaded.entries.find((item) => item.id === 'x1');
   assert.equal(repaired.amount, 500);
-  assert.equal(repaired.category, 'diger');
+  assert.equal(repaired.category, 'keyif');
   assert.equal(repaired.note.length, 60);
   assert.equal(repaired.createdAt, 0);
+});
+
+function v1State() {
+  return {
+    version: 1,
+    settings: { setupDone: true, paydays: PLAN, carryOver: true },
+    generatedThrough: '2026-11-17',
+    entries: [
+      { id: 'a', type: 'income', amount: 300000, category: 'harclik', note: '', date: '2026-11-15', createdAt: 1 },
+      { id: 'b', type: 'expense', amount: 55000, category: 'diger', note: 'Kurulumdan önce harcanan', date: '2026-11-15', createdAt: 2 },
+      { id: 'c', type: 'expense', amount: 4500, category: 'kahve', note: '', date: '2026-11-17', createdAt: 3 },
+      { id: 'd', type: 'expense', amount: 300000, category: 'abonelik', note: '', date: '2026-11-17', createdAt: 4 },
+      { id: 'e', type: 'expense', amount: 9000, category: 'kahve', note: '', date: '2026-11-17', createdAt: 5 }
+    ]
+  };
+}
+
+test('v1 verisi kayıpsız v2ye taşınır, eski kategoriler bölüm olur', () => {
+  const storage = memoryStorage({ [STORAGE_KEY]: JSON.stringify(v1State()) });
+  const { state, status, needsSave } = loadState(storage);
+  assert.equal(status, 'ok');
+  assert.equal(needsSave, true);
+  assert.equal(storage.map.get(PRE_MIGRATION_KEY), JSON.stringify(v1State()));
+  assert.equal(state.version, 2);
+  assert.deepEqual(state.plans, {});
+  assert.deepEqual(state.sections.map(({ id, name }) => [id, name]), [['kahve', 'Kahve'], ['abonelik', 'Abonelik'], ['diger', 'Diğer']]);
+  assert.deepEqual(state.entries.map((item) => item.category), ['harclik', 'diger', 'kahve', 'abonelik', 'kahve']);
+});
+
+test('v1 yedeği de yüklenir', () => {
+  const result = importBackup(JSON.stringify({ app: 'harclik', data: v1State() }));
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped, 0);
+  assert.equal(result.state.sections.length, 3);
+});
+
+test('bölüm ve planlardaki bozuk parçalar ayıklanır', () => {
+  const raw = {
+    ...sampleState(),
+    sections: [
+      { id: 's1', name: '  Yemek  ', color: '#D9734E' },
+      { id: 's1', name: 'Kopya', color: '#000000' },
+      { id: 'keyif', name: 'Sahte keyif', color: '#000000' },
+      { id: 's2', name: '   ', color: '#000000' },
+      { id: 's3', name: 'Ulaşım', color: 'kırmızı' },
+      { id: 's4', name: 'YEMEK', color: '#000000' },
+      { id: 's5', name: 'Keyif', color: '#000000' },
+      { id: '7', name: 'Sayı', color: '#000000' },
+      null
+    ],
+    plans: {
+      '2026-11-15': { s1: 120000, s3: -5, s2: 100, yok: 100 },
+      'dün': { s1: 1 }
+    },
+    entries: [
+      ...sampleState().entries,
+      { id: 'x1', type: 'expense', amount: 100, category: 's2', note: '', date: '2026-11-16', createdAt: 9 },
+      { id: 'x2', type: 'expense', amount: 100, category: 's1', note: '', date: '2026-11-16', createdAt: 10 }
+    ]
+  };
+  const { state } = loadState(memoryStorage({ [STORAGE_KEY]: JSON.stringify(raw) }));
+  assert.deepEqual(state.sections.map(({ id, name }) => [id, name]), [['s1', 'Yemek'], ['s3', 'Ulaşım'], ['s4', 'YEMEK 2']]);
+  assert.match(state.sections[1].color, /^#[0-9A-F]{6}$/i);
+  assert.deepEqual(state.plans, { '2026-11-15': { s1: 120000 } });
+  assert.equal(state.entries.find((item) => item.id === 'x1').category, 'keyif');
+  assert.equal(state.entries.find((item) => item.id === 'x2').category, 's1');
 });
 
 test('depolama hata verirse saveState false döner', () => {
